@@ -17,7 +17,7 @@ window_size = 128
 #		samples_per_epoch=1000, batch_size=100, threshold=0.3, verbose=True, checkpoint="boot_check.png")
 
 icpr_generator = PreferentialHeatmapGenerator(window_size, "datasets/icpr/train/", split=0.15, 
-		samples_per_epoch=1000, val_samples=250, batch_size=32, fraction=0.08)
+		samples_per_epoch=1000, val_samples=250, batch_size=32, fraction=0.05)
 
 model = VGGNetEncoder(window_size)
 

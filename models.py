@@ -9,6 +9,8 @@ from keras.models import Model, load_model
 from keras.optimizers import SGD, adadelta
 from keras.callbacks import ProgbarLogger, RemoteMonitor, ReduceLROnPlateau, ModelCheckpoint
 
+from keras import backend as K
+
 
 
 
@@ -43,6 +45,9 @@ def constrain(l1, input_l = None):
 	#print ("Inputs", w1, i1)
 	w1 = Cropping2D(cropping=((-s1, s1 + w1 - i1), (-s1, s1 + w1 - i1)))(l1)
 	return w1
+
+def binary_crossentropy_norm(y_true, y_pred):
+    return K.mean(K.binary_crossentropy(y_pred, y_true, from_logits=True), axis=-1)	
 
 
 
@@ -85,8 +90,8 @@ class ImgToImgModel(object):
 			image_generator.checkpoint()
 
 
-	def predict(self, image_array):
-		return self.model.predict(image_array)
+	def predict(self, image_array, batch_size=32, verbose=False):
+		return self.model.predict(image_array, batch_size=batch_size, verbose=verbose)
 
 	def evaluate(self, image, overlap=0, blackout=20):
 
@@ -102,17 +107,19 @@ class ImgToImgModel(object):
 		snapshots = []
 		for x in x_ind:
 			for y in y_ind:
+				print (x, y)
 				snapshots.append(image[(x - blackout):(x + window_size + blackout), (y - blackout):(y + window_size + blackout), :])
 		
 		snapshots = np.array(snapshots)
 		print (snapshots.shape)
 		snapshots = np.rollaxis(snapshots, 3, 1)
-		preds = self.predict(snapshots)
+		preds = self.predict(snapshots, batch_size=32, verbose=1)
 
 		i = 0
 		for x in x_ind:
 			for y in y_ind:
-				hmap[x:(x + window_size), y:(y + window_size)] += preds[i, 0][blackout:(self.window_size - blackout)]
+				print (x, y)
+				hmap[x:(x + window_size), y:(y + window_size)] += preds[i, 0][blackout:(self.window_size - blackout), blackout:(self.window_size - blackout)]
 				coverage[x:(x + window_size), y:(y + window_size)] += 1
 				i+=1
 				#TODO: implement averaging at boundaries
@@ -125,7 +132,7 @@ class ImgToImgModel(object):
 	@classmethod
 	def load(self, weights_file):
 
-		model = load_model(weights_file)
+		model = load_model(weights_file, custom_objects={'binary_crossentropy_norm': binary_crossentropy_norm})
 
 		window_size = model.layers[0].batch_input_shape[2]
 		dnn = self(window_size)
@@ -290,7 +297,7 @@ class VGGNetEncoder(ImgToImgModel):
 
 		autoencoder = Model(input_img, decoded)
 		sgd = SGD(lr=1e-2, decay=1e-6, momentum=0.9, nesterov=True)
-		autoencoder.compile(optimizer=sgd, loss='mse', metrics=self.metrics)
+		autoencoder.compile(optimizer=sgd, loss=binary_crossentropy_norm, metrics=self.metrics)
 		autoencoder.summary()
 
 		return autoencoder

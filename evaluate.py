@@ -6,7 +6,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import glob, sys, os, random, argparse
 
-from models import ImgToImgModel
+from models import ImgToImgModel, binary_crossentropy_norm
 
 
 parser = argparse.ArgumentParser(
