@@ -73,9 +73,9 @@ class AbstractGenerator(object):
 		raise NotImplementedError()
 
 	def checkpoint(self):
-		cmd = ['python', 'evaluate.py', '-w', self.model.checkpoint, '-f', 
-			'datasets/icpr/train/A01_03_image.jpg', '-o', 'datasets/icpr/train/A01_03_pred.jpg']
-		print subprocess.check_output(cmd)
+		#cmd = ['python', 'evaluate.py', '-w', self.model.checkpoint, '-f', 
+		#	'datasets/icpr/train/A01_03_image.jpg', '-o', 'datasets/icpr/train/A01_03_pred.jpg']
+		print "HI Check"#subprocess.check_output(cmd)
 
 	def data(self, mode='train'):
 		raise NotImplementedError()
@@ -84,8 +84,11 @@ class AbstractGenerator(object):
 
 
 class TrainValSplitGenerator(AbstractGenerator):
-	def __init__(self, window_size, directory, split=0.15, **kwargs):
-		files_list = glob.glob(directory + "/*image.jpg")
+	def __init__(self, window_size, directory, input_type='image', output_type='heatmap', split=0.15, **kwargs):
+		self.prefix = "/*" + input_type + ".jpg"
+		self.input_type = input_type
+		self.output_type = output_type
+		files_list = glob.glob(directory + self.prefix)
 		train_list, val_list = train_test_split(files_list, test_size=split)
 		super(TrainValSplitGenerator, self).__init__(window_size, train_list, val_list, **kwargs)
 
@@ -100,9 +103,19 @@ class ImageHeatmapGenerator(TrainValSplitGenerator):
 		self.img = {}
 		self.hmap = {}
 		for img_file in np.append(self.train_image_list, self.val_image_list):
-			self.img[img_file] = (plt.imread(img_file))
-			heatmap_file = img_file[:-9] + "heatmap.jpg"
-			self.hmap[img_file] = ((plt.imread(heatmap_file).sum(axis=2) < 700).astype(int))
+			heatmap_file = img_file[:-(len(self.prefix) - 2)] + self.output_type + ".jpg"
+			print (img_file, heatmap_file)
+
+			
+			if self.input_type == 'image':
+				self.img[img_file] = (plt.imread(img_file))/255.0
+			else:
+				self.img[img_file] = ((plt.imread(img_file).sum(axis=2) < 700).astype(int))
+
+			if self.output_type == 'image':
+				self.hmap[img_file] = (plt.imread(heatmap_file))/255.0
+			else:
+				self.hmap[img_file] = ((plt.imread(heatmap_file).sum(axis=2) < 700).astype(int))
 
 	def data(self, mode='train'):
 		file_list = self.train_image_list if mode == 'train' else self.val_image_list
@@ -115,7 +128,7 @@ class ImageHeatmapGenerator(TrainValSplitGenerator):
 			x = random.randint(0, self.hmap[image_file].shape[0] - self.window_size)
 			y = random.randint(0, self.hmap[image_file].shape[1] - self.window_size)
 
-			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size), :]/255.0)
+			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size)])
 			hmap_snap.append([self.hmap[image_file][x:(x + self.window_size), y:(y + self.window_size)]])
 
 		img_snap = np.rollaxis(np.array(img_snap), 3, 1)
@@ -126,8 +139,7 @@ class ImageHeatmapGenerator(TrainValSplitGenerator):
 
 class PreferentialHeatmapGenerator(ImageHeatmapGenerator):
 	def __init__(self, *args, **kwargs):
-		self.fraction = kwargs.get('fraction', 0.1)
-		del kwargs['fraction']
+		self.fraction = kwargs.pop('fraction', 0.1)
 		super(PreferentialHeatmapGenerator, self).__init__(*args, **kwargs)
 
 	def data(self, mode='train'):
@@ -147,11 +159,20 @@ class PreferentialHeatmapGenerator(ImageHeatmapGenerator):
 			if frac < self.fraction:
 				continue
 
-			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size), :]/255.0)
-			hmap_snap.append([hmap_cur])
+			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size)])
+			hmap_snap.append(hmap_cur)
 
-		img_snap = np.rollaxis(np.array(img_snap), 3, 1)
-		hmap_snap = np.array(hmap_snap)
+		img_snap, hmap_snap = np.array(img_snap), np.array(hmap_snap)
+		if self.input_type == 'image':
+			img_snap = np.rollaxis(np.array(img_snap), 3, 1)
+		else:
+			img_snap = img_snap.reshape(len(img_snap), 1, self.window_size, self.window_size)
+
+		if self.output_type == 'image':
+			hmap_snap = np.rollaxis(np.array(hmap_snap), 3, 1)
+		else:
+			hmap_snap = img_snap.reshape(len(hmap_snap), 1, self.window_size, self.window_size)
+
 		return img_snap, hmap_snap
 
 

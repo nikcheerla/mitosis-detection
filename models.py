@@ -3,11 +3,13 @@
 
 import numpy as np
 
-from keras.layers import Input, Dense, Dropout, Reshape, Flatten, merge
+from keras.layers import Input, Reshape, Permute, Flatten, Dense, Lambda, Dropout, merge
 from keras.layers import Convolution2D, MaxPooling2D, UpSampling2D, ZeroPadding2D, SpatialDropout2D, Cropping2D
 from keras.models import Model, load_model
 from keras.optimizers import SGD, adadelta
 from keras.callbacks import ProgbarLogger, RemoteMonitor, ReduceLROnPlateau, ModelCheckpoint
+from keras import backend as K
+from keras import objectives
 
 from keras import backend as K
 
@@ -85,7 +87,7 @@ class ImgToImgModel(object):
 			self.model.fit(X_train, y_train,
 	                nb_epoch=1, batch_size=image_generator.batch_size,
 	                verbose=1, validation_data=image_generator.data(mode='val'),
-	                callbacks=[reduce_lr, remote, checkpointer]
+	                callbacks=[reduce_lr]
 	            )
 			image_generator.checkpoint()
 
@@ -108,7 +110,7 @@ class ImgToImgModel(object):
 		for x in x_ind:
 			for y in y_ind:
 				print (x, y)
-				snapshots.append(image[(x - blackout):(x + window_size + blackout), (y - blackout):(y + window_size + blackout), :])
+				snapshots.append(image[(x - blackout):(x + window_size + blackout), (y - blackout):(y + window_size + blackout)])
 		
 		snapshots = np.array(snapshots)
 		print (snapshots.shape)
@@ -308,8 +310,120 @@ class VGGNetEncoder(ImgToImgModel):
 
 
 
+
+
+
+
+"""VAE model (implements AbstractModel from models.py) that autoencodes single state"""
+
+class VAEModel(ImgToImgModel):
+
+	def __init__(self, *args, **kwargs):
+		self.batch_size = kwargs.pop('batch_size', 100)
+		self.latent_dim = kwargs.pop('latent_dim', 12)
+		self.std = kwargs.pop('std', 0.06)
+		self.note_dim = kwargs.pop('note_dim', 1)
+		super(VAEModel, self).__init__(*args, **kwargs)
+
+
+
+	def build_model(self):
+
+		input_img = Input(batch_shape=(self.batch_size, 1, self.window_size, self.window_size))
+
+		encoder = self.build_encoder()
+		decoder = self.build_decoder()
+
+		z_mean, z_log_var = encoder(input_img)
+
+		def sampling(args):
+			z_mean, z_log_var = args
+			epsilon = K.random_normal(shape=(self.batch_size, self.latent_dim), mean=0.,
+				std=self.std)
+			return z_mean + K.exp(z_log_var / 2) * epsilon
+
+		z = Lambda(sampling, output_shape=(self.latent_dim,)) ([z_mean, z_log_var])
+		output = decoder(z)
+		output = Reshape ((1, self.window_size, self.window_size)) (output)
+
+		model = Model(input_img, output)
+		print ("\nCombined model:")
+		model.summary()
+
+		def vae_loss(x, x_decoded_mean):
+			xent_loss = self.window_size * self.window_size * objectives.binary_crossentropy(x, x_decoded_mean)
+			kl_loss = - 0.5 * K.sum(1 + z_log_var[0] - K.square(z_mean[0]) - K.exp(z_log_var[0]), axis=-1)
+			return xent_loss
+
+		sgd = SGD(lr=7e-3, decay=1e-6, momentum=0.8, nesterov=True)
+		model.compile(optimizer=sgd, loss=vae_loss, metrics=['binary_crossentropy', 'mse'])
+
+		return model
+
+
+
+	def build_encoder(self):
+		input_img = Input(shape=(1, self.window_size, self.window_size))
+		x = Convolution2D(50, 3, 3, activation='relu', border_mode='same') (input_img)
+		x = Convolution2D(50, 3, 3, activation='relu', border_mode='same') (x)
+		x = MaxPooling2D((2, 2)) (x)
+		x = Convolution2D(50, 3, 3, activation='softplus', border_mode='same') (x)
+		x = Convolution2D(50, 3, 3, activation='softplus', border_mode='same') (x)
+		x = MaxPooling2D((2, 2)) (x)
+		x = Convolution2D(50, 5, 5, activation='relu', border_mode='same') (x)
+		x = Convolution2D(50, 5, 5, activation='tanh', border_mode='same') (x)
+		x = MaxPooling2D((2, 2)) (x)
+		x = Convolution2D(1, 1, 1, activation='tanh', border_mode='same') (x)
+		x = Flatten() (x)
+
+		#h = Dense(intermediate_dim, activation='relu') (x)
+
+		z_mean = Dense(self.latent_dim)(x)
+		z_log_var = Dense(self.latent_dim)(x)
+
+		self.encoder_input = input_img
+		self.encoder = Model(input_img, [z_mean, z_log_var])
+
+		print ("\nEncoder Model:")
+		self.encoder.summary()
+		return self.encoder
+
+
+
+	def build_decoder(self):
+		input_img = Input(shape=(self.latent_dim,))
+
+		x = Dense(self.window_size*self.window_size/64, activation='tanh') (input_img)
+		x = Reshape ((1, self.window_size/8, self.window_size/8)) (x)
+
+		x = UpSampling2D((2, 2)) (x)
+		x = Convolution2D(10, 3, 3, activation='tanh', border_mode='same') (x)
+		x = Convolution2D(20, 3, 3, activation='relu', border_mode='same') (x)
+		
+		x = UpSampling2D((2, 2)) (x)
+		x = Convolution2D(30, 3, 3, activation='softplus', border_mode='same') (x)
+		x = Convolution2D(40, 3, 3, activation='softplus', border_mode='same') (x)
+		
+		x = UpSampling2D((2, 2)) (x)
+		x = Convolution2D(30, 5, 5, activation='relu', border_mode='same') (x)
+		x = Convolution2D(1, 5, 5, activation='relu', border_mode='same') (x)
+		
+		self.decoder = Model(input_img, x)
+		print ("\nDecoder Model:")
+		self.decoder.summary()
+		return self.decoder
+
+
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
-	model = VGGNetEncoder(256)
+	model = VAEModel(window_size=128, latent_dim=64, batch_size=10, std=0.04)
 
 
 
