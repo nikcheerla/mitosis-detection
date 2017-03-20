@@ -22,8 +22,7 @@ model = ImgToImgModel.load(args.weights_file)
 
 if args.image_dir == None:
 	img = plt.imread(args.image_file)
-
-	hmap = model.evaluate(img, overlap=model.window_size/2)
+	hmap = model.evaluate(img)
 	plt.imsave(args.image_out_file, hmap, cmap=plt.get_cmap("Oranges"))
 
 else:

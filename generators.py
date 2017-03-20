@@ -131,8 +131,17 @@ class ImageHeatmapGenerator(TrainValSplitGenerator):
 			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size)])
 			hmap_snap.append([self.hmap[image_file][x:(x + self.window_size), y:(y + self.window_size)]])
 
-		img_snap = np.rollaxis(np.array(img_snap), 3, 1)
-		hmap_snap = np.array(hmap_snap)
+		img_snap, hmap_snap = np.array(img_snap), np.array(hmap_snap)
+		if self.input_type == 'image':
+			img_snap = np.rollaxis(np.array(img_snap), 3, 1)
+		else:
+			img_snap = img_snap.reshape(len(img_snap), 1, self.window_size, self.window_size)
+
+		if self.output_type == 'image':
+			hmap_snap = np.rollaxis(np.array(hmap_snap), 3, 1)
+		else:
+			hmap_snap = hmap_snap.reshape(len(hmap_snap), 1, self.window_size, self.window_size)
+
 		return img_snap, hmap_snap
 
 
@@ -143,11 +152,14 @@ class PreferentialHeatmapGenerator(ImageHeatmapGenerator):
 		super(PreferentialHeatmapGenerator, self).__init__(*args, **kwargs)
 
 	def data(self, mode='train'):
+		print ("generating data")
 		file_list = self.train_image_list if mode == 'train' else self.val_image_list
 		num_samples = self.samples_per_epoch if mode == 'train' else self.val_samples
 
 		img_snap, hmap_snap = [], []
 		while len(img_snap) < self.samples_per_epoch:
+			print len(img_snap),
+
 			image_file = random.choice(file_list)
 			
 			x = random.randint(0, self.hmap[image_file].shape[0] - self.window_size)
@@ -155,14 +167,17 @@ class PreferentialHeatmapGenerator(ImageHeatmapGenerator):
 
 			hmap_cur = self.hmap[image_file][x:(x + self.window_size), y:(y + self.window_size)]
 			frac = hmap_cur.astype(int).sum() / (hmap_cur.shape[0] * hmap_cur.shape[1] * 1.0)
-
+			print (frac)
 			if frac < self.fraction:
 				continue
-
+			
 			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size)])
 			hmap_snap.append(hmap_cur)
 
 		img_snap, hmap_snap = np.array(img_snap), np.array(hmap_snap)
+		print img_snap.shape
+		print hmap_snap.shape
+
 		if self.input_type == 'image':
 			img_snap = np.rollaxis(np.array(img_snap), 3, 1)
 		else:
@@ -171,7 +186,7 @@ class PreferentialHeatmapGenerator(ImageHeatmapGenerator):
 		if self.output_type == 'image':
 			hmap_snap = np.rollaxis(np.array(hmap_snap), 3, 1)
 		else:
-			hmap_snap = img_snap.reshape(len(hmap_snap), 1, self.window_size, self.window_size)
+			hmap_snap = hmap_snap.reshape(len(hmap_snap), 1, self.window_size, self.window_size)
 
 		return img_snap, hmap_snap
 

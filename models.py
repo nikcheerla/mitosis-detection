@@ -11,10 +11,80 @@ from keras.callbacks import ProgbarLogger, RemoteMonitor, ReduceLROnPlateau, Mod
 from keras import backend as K
 from keras import objectives
 
-from keras import backend as K
+from dnn import ResNet50
+
+import IPython
 
 
 
+
+
+
+class FCNModel(object):
+	def __init__(self, local_model, checkpoint="results/checkpoint.h5"):
+		self.local_model = local_model
+		self.checkpoint = "weights.hdf5"
+
+	def create_subnet(self, input_size=None, output_size=None):
+		if output_size is not None:
+			L = output_size
+			H = output_size * 1000
+			while (L < H):
+				mid = (L + H)//2
+				output_size_pred = self.create_subnet(input_size=mid).output_shape[-1]
+				if output_size_pred >= output_size:
+					H = mid
+				else:
+					L = mid + 1
+
+			model = self.create_subnet(input_size=L)
+			print (model.output_shape)
+			return model
+
+		input_img = Input(shape=(3, input_size, input_size))
+		x = self.local_model(input_img)
+		model = Model(input_img, x)
+		x = Reshape(model.output_shape[1:]) (x)
+		model = Model(input_img, x)
+
+		return model
+
+	def train(X, Y, input_size, epochs=5):
+		model = create_subnet(input_shape=input_shape)
+		model.fit(X, Y, nb_epoch=epoch)
+
+	def evaluate(X, output_size):
+		model = create_subnet(output_size=output_size)
+		pad_width = (X.shape[-1] - output_size)//2
+		X = np.pad(X, pad_width)
+		print (X.shape, model.input_shape)
+
+		preds = model.predict(X)
+		return preds
+
+
+
+
+
+
+if __name__ == "__main__":
+	dnn = ResNet50(include_top=False, weights='imagenet')
+
+	model = FCNModel(local_model=dnn)
+	m = model.create_subnet(output_size=1000)
+	IPython.embed()
+
+
+
+
+
+
+
+
+
+
+
+"""
 
 
 # Utility keras connector methods
@@ -53,11 +123,11 @@ def binary_crossentropy_norm(y_true, y_pred):
 
 
 
+"""
 
 
 
-
-
+"""
 
 # Basic Image--> Image model
 
@@ -72,7 +142,7 @@ class ImgToImgModel(object):
 	def build_model(self):
 		return None
 
-	def train(self, image_generator, epochs=20):
+	def train(self, image_generator, epochs=[5, 5, 5, 5]):
 		remote = RemoteMonitor(root='https://localhost:9000')
 		reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, verbose=1,
                   patience=3, min_lr=0.001)
@@ -80,12 +150,13 @@ class ImgToImgModel(object):
 
 		image_generator.model = self
 		
-		for i in range(1, epochs + 1):
-			print ("Epoch {}: ".format(i))
+		for i, nb_epoch in enumerate(epochs):
+			print ("ERA {}: ".format(i))
 
 			X_train, y_train = image_generator.data(mode='train')
+			print (X_train.shape, y_train.shape)
 			self.model.fit(X_train, y_train,
-	                nb_epoch=1, batch_size=image_generator.batch_size,
+	                nb_epoch=nb_epoch, batch_size=image_generator.batch_size,
 	                verbose=1, validation_data=image_generator.data(mode='val'),
 	                callbacks=[reduce_lr]
 	            )
@@ -156,7 +227,7 @@ class SimpleConvFilter(ImgToImgModel):
 		super(SimpleConvFilter, self).__init__(*args, **kwargs)
 	
 	def build_model(self):
-		input_img = Input(shape=(3, self.window_size, self.window_size))
+		input_img = Input(shape=(1, self.window_size, self.window_size))
 
 		x = Convolution2D(32, 5, 5, activation='relu', border_mode='same')(input_img)
 		x = Convolution2D(16, 5, 5, activation='relu', border_mode='same')(x)
@@ -167,7 +238,7 @@ class SimpleConvFilter(ImgToImgModel):
 
 		autoencoder = Model(input_img, decoded)
 		sgd = SGD(lr=1e-2, decay=1e-6, momentum=0.9, nesterov=True)
-		autoencoder.compile(optimizer=sgd, loss='binary_crossentropy', metrics=self.metrics)
+		autoencoder.compile(optimizer=sgd, loss='mse', metrics=self.metrics)
 		autoencoder.summary()
 
 		return autoencoder
@@ -189,9 +260,9 @@ class SimpleAutoEncoder(ImgToImgModel):
 		input_img = Input(shape=(3, self.window_size, self.window_size))
 
 		x = Convolution2D(16, 8, 8, activation='relu', border_mode='same')(input_img)
-		x = MaxPooling2D((4, 4), border_mode='same')(x)
-		link2 = Convolution2D(8, 5, 5, activation='relu', border_mode='same')(x)
-		x = MaxPooling2D((3, 3), border_mode='same')(link2)
+		x = MaxPooling2D((2, 2), border_mode='same')(x)
+		x = Convolution2D(8, 5, 5, activation='relu', border_mode='same')(x)
+		x = MaxPooling2D((2, 2), border_mode='same')(x)
 		x = Convolution2D(8, 3, 3, activation='relu', border_mode='same')(x)
 		encoded = MaxPooling2D((2, 2), border_mode='same')(x)
 
@@ -200,10 +271,9 @@ class SimpleAutoEncoder(ImgToImgModel):
 		x = Convolution2D(8, 3, 3, activation='relu', border_mode='same')(encoded)
 		x = UpSampling2D((2, 2))(x)
 		x = Convolution2D(8, 3, 3, activation='relu', border_mode='same')(x)
-		x = UpSampling2D((3, 3))(x)
-		x = project(x, link2, input_l=input_img)
+		x = UpSampling2D((2, 2))(x)
 		x = Convolution2D(16, 5, 5, activation='relu', border_mode='same')(x)
-		x = UpSampling2D((4, 4))(x)
+		x = UpSampling2D((2, 2))(x)
 		#x = ZeroPadding2D((8, 8))(x)
 		decoded = constrain(Convolution2D(1, 8, 8, activation='sigmoid', border_mode='same')(x), input_img)
 
@@ -228,11 +298,12 @@ class SimpleAutoEncoder(ImgToImgModel):
 class VGGNetEncoder(ImgToImgModel):
 
 	def __init__(self, *args, **kwargs):
+		self.map_size = kwargs.pop('map_size', 64)
 		super(VGGNetEncoder, self).__init__(*args, **kwargs)
 	
 	def build_model(self):
-		input_img = Input(shape=(3, self.window_size, self.window_size))
-		map_size = 96
+		input_img = Input(shape=(1, self.window_size, self.window_size))
+		map_size = self.map_size
 		x = Convolution2D(map_size/8, 3, 3, activation='relu', border_mode='same')(input_img)
 		x = Convolution2D(map_size/4, 3, 3, activation='softplus', border_mode='same')(x)
 		x = SpatialDropout2D(p=0.4)(x)
@@ -246,7 +317,6 @@ class VGGNetEncoder(ImgToImgModel):
 		x = Convolution2D(map_size/2, 3, 3, activation='relu', border_mode='same')(x)
 		x = Convolution2D(map_size/2, 3, 3, activation='relu', border_mode='same')(x)
 		x = Convolution2D(map_size/2, 3, 3, activation='softplus', border_mode='same')(x)
-		x = Dropout(p=0.3)(x)
 		x = link3 = MaxPooling2D((2,2), strides=(2,2))(x)
 
 		x = Convolution2D(map_size/2, 3, 3, activation='relu', border_mode='same')(x)
@@ -258,13 +328,12 @@ class VGGNetEncoder(ImgToImgModel):
 		x = Convolution2D(map_size, 3, 3, activation='relu', border_mode='same')(x)
 		x = Convolution2D(map_size, 3, 3, activation='relu', border_mode='same')(x)
 		x = Convolution2D(map_size, 3, 3, activation='softplus', border_mode='same')(x)
-		x = Dropout(p=0.2)(x)
 		x = link5 = MaxPooling2D((2,2), strides=(2,2))(x)
 
 		x = Flatten()(x)
-		x = Dense(256, activation='sigmoid')(x)
-		x = Dropout(0.2)(x)
-		x = Reshape((4, 8, 8))(x)
+		x = Dense(4*self.window_size/32*self.window_size/32, activation='sigmoid')(x)
+		x = Dropout(0.4)(x)
+		x = Reshape((4, self.window_size/32, self.window_size/32))(x)
 
 		x = project(x, link5, input_l=input_img)
 		x = Convolution2D(map_size, 3, 3, activation='softplus', border_mode='same', init='glorot_uniform')(x)
@@ -272,34 +341,34 @@ class VGGNetEncoder(ImgToImgModel):
 		x = Convolution2D(map_size, 3, 3, activation='relu', border_mode='same')(x)
 		x = UpSampling2D((2, 2))(x)
 
-		x = project(x, link4, input_l=input_img)
+		#x = project(x, link4, input_l=input_img)
 		x = Convolution2D(map_size/2, 3, 3, activation='softplus', border_mode='same')(x)
 		x = Convolution2D(map_size/2, 3, 3, activation='relu', border_mode='same')(x)
 		x = Convolution2D(map_size/2, 3, 3, activation='relu', border_mode='same')(x)
 		x = UpSampling2D((2, 2))(x)
 
-		x = project(x, link3, input_l=input_img)
+		#x = project(x, link3, input_l=input_img)
 		x = Convolution2D(map_size/2, 3, 3, activation='softplus', border_mode='same')(x)
 		x = Convolution2D(map_size/2, 3, 3, activation='relu', border_mode='same')(x)
 		x = Convolution2D(map_size/2, 3, 3, activation='relu', border_mode='same')(x)
 		x = UpSampling2D((2, 2))(x)
 
-		x = project(x, link2, input_l=input_img)
+		#x = project(x, link2, input_l=input_img)
 		x = Convolution2D(map_size/4, 3, 3, activation='softplus', border_mode='same')(x)
 		x = Convolution2D(map_size/4, 3, 3, activation='relu', border_mode='same')(x)
 		x = UpSampling2D((2, 2))(x)
 
-		x = project(x, link1, input_l=input_img)
+		#x = project(x, link1, input_l=input_img)
 		x = Convolution2D(map_size/4, 3, 3, activation='softplus', border_mode='same')(x)
 		x = Convolution2D(map_size/4, 3, 3, activation='relu', border_mode='same')(x)
 		x = UpSampling2D((2, 2))(x)
-		x = project(x, input_img, input_l=input_img)
+		#x = project(x, input_img, input_l=input_img)
 		x = Convolution2D(1, 8, 8, activation='relu', border_mode='same')(x)
 		decoded = constrain(x, input_img)
 
 		autoencoder = Model(input_img, decoded)
 		sgd = SGD(lr=1e-2, decay=1e-6, momentum=0.9, nesterov=True)
-		autoencoder.compile(optimizer=sgd, loss=binary_crossentropy_norm, metrics=self.metrics)
+		autoencoder.compile(optimizer=sgd, loss='binary_crossentropy', metrics=self.metrics)
 		autoencoder.summary()
 
 		return autoencoder
@@ -314,7 +383,7 @@ class VGGNetEncoder(ImgToImgModel):
 
 
 
-"""VAE model (implements AbstractModel from models.py) that autoencodes single state"""
+VAE model (implements AbstractModel from models.py) that autoencodes single state
 
 class VAEModel(ImgToImgModel):
 
@@ -418,13 +487,7 @@ class VAEModel(ImgToImgModel):
 
 
 
-
-
-
-
-if __name__ == "__main__":
-	model = VAEModel(window_size=128, latent_dim=64, batch_size=10, std=0.04)
-
+"""
 
 
 
