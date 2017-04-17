@@ -11,7 +11,7 @@ from keras.callbacks import ProgbarLogger, RemoteMonitor, ReduceLROnPlateau, Mod
 from keras import backend as K
 from keras import objectives
 
-from dnn import ResNet50
+from dnn import fully_convolutional, dilation_map, resize
 
 import IPython
 
@@ -23,58 +23,91 @@ import IPython
 class FCNModel(object):
 	def __init__(self, local_model, checkpoint="results/checkpoint.h5"):
 		self.local_model = local_model
-		self.checkpoint = "weights.hdf5"
+		self.checkpoint = checkpoint
 
-	def create_subnet(self, input_size=None, output_size=None):
-		if output_size is not None:
-			L = output_size
-			H = output_size * 1000
-			while (L < H):
-				mid = (L + H)//2
-				output_size_pred = self.create_subnet(input_size=mid).output_shape[-1]
-				if output_size_pred >= output_size:
-					H = mid
-				else:
-					L = mid + 1
+	def train(self, image_generator, epochs=[20]):
+		remote = RemoteMonitor(root='https://localhost:9000')
+		reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, verbose=1,
+                  patience=3, min_lr=0.001)
+		checkpointer = ModelCheckpoint(filepath=self.checkpoint, verbose=1, save_best_only=False)
 
-			model = self.create_subnet(input_size=L)
-			print (model.output_shape)
-			return model
+		image_generator.model = self
+		
+		for i, nb_epoch in enumerate(epochs):
+			print ("ERA {}: ".format(i))
 
-		input_img = Input(shape=(3, input_size, input_size))
-		x = self.local_model(input_img)
-		model = Model(input_img, x)
-		x = Reshape(model.output_shape[1:]) (x)
-		model = Model(input_img, x)
+			X_train, y_train = image_generator.data(mode='train')
+			X_val, y_val = image_generator.data(mode='val')
+			print (X_train.shape, y_train.shape)
+			try:
+				self.local_model.fit(X_train, y_train,
+		                epochs=nb_epoch, batch_size=image_generator.batch_size,
+		                verbose=1, validation_data=(X_val, y_val),
+		                callbacks=[reduce_lr, checkpointer]
+		            )
+				preds = self.local_model.predict(X_val)
+				print ("MEAANNNN")
+				print (preds.mean(axis=0))
+			except KeyboardInterrupt:
+				pass
 
-		return model
+	def evaluate(self, X, method=dilation_map, batch_size=1):
+		model = method(self.local_model)
+		model = resize(model, (X.shape[1], X.shape[2], 3))
 
-	def train(X, Y, input_size, epochs=5):
-		model = create_subnet(input_shape=input_shape)
-		model.fit(X, Y, nb_epoch=epoch)
+		return model.predict(X, batch_size=batch_size, verbose=1)
 
-	def evaluate(X, output_size):
-		model = create_subnet(output_size=output_size)
-		pad_width = (X.shape[-1] - output_size)//2
-		X = np.pad(X, pad_width)
-		print (X.shape, model.input_shape)
+	def evaluate_tiled(self, image, method=dilation_map, window_size=None, overlap=0, batch_size=1):
 
-		preds = model.predict(X)
-		return preds
+		window_size = image.shape[0] if window_size is None else window_size
+
+		width, height = image.shape[0], image.shape[1]
+		x_ind = np.append(np.arange(0, width - window_size - 1, window_size - overlap).astype(int), [width-window_size])
+		y_ind = np.append(np.arange(0, height - window_size - 1, window_size - overlap).astype(int), [height-window_size])
 
 
+		hmap = np.zeros((width, height))
+		coverage = np.zeros((width, height))
+
+		snapshots = []
+		for x in x_ind:
+			for y in y_ind:
+				snapshots.append(image[(x):(x + window_size), (y):(y + window_size)])
+		
+		snapshots = np.array(snapshots)
+		print (snapshots.shape)
+		preds = self.evaluate(snapshots, batch_size=batch_size, method=method)
+
+		i = 0
+		for x in x_ind:
+			for y in y_ind:
+				hmap[x:(x + window_size), y:(y + window_size)] = preds[i, :, :, 1]
+				#coverage[x:(x + window_size), y:(y + window_size)] += 1
+				i+=1
+				#TODO: implement averaging at boundaries
+
+		return hmap
+
+	def save(self, checkpoint=None):
+		checkpoint = self.checkpoint if checkpoint is None else checkpoint
+		self.local_model.save(checkpoint)
+
+	@classmethod
+	def load(cls, checkpoint=None):
+		local_model = load_model(checkpoint)
+		return cls(local_model, checkpoint=checkpoint)
 
 
 
 
 if __name__ == "__main__":
-	dnn = ResNet50(include_top=False, weights='imagenet')
-
-	model = FCNModel(local_model=dnn)
-	m = model.create_subnet(output_size=1000)
+	from external.vgg19 import VGG19
+	model = VGG19(weights=None, input_shape=(64, 64, 3), classes=2, pooling='avg')
+	model.summary()
+	m2 = FCNModel(model)
+	X = np.random.rand(5, 180, 180, 3)
+	preds = m2.evaluate(X)
 	IPython.embed()
-
-
 
 
 

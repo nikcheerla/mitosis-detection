@@ -7,10 +7,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 plt.ioff()
 import glob, sys, os, random, time, logging, threading, subprocess
+import scipy.io, scipy.misc
 
 from sklearn.cross_validation import train_test_split
 import progressbar
-from keras.metrics import binary_crossentropy, binary_accuracy, fmeasure, precision, recall
+from keras.metrics import binary_crossentropy, binary_accuracy
 
 
 class threadsafe_iter:
@@ -58,8 +59,7 @@ def normalize(arr):
 
 
 class AbstractGenerator(object):
-	def __init__(self, window_size, train_image_list, val_image_list, samples_per_epoch=500, val_samples=100, batch_size=50, verbose=True):
-		self.window_size = window_size
+	def __init__(self, train_image_list, val_image_list, samples_per_epoch=500, val_samples=100, batch_size=50, verbose=True):
 		self.train_image_list = train_image_list
 		self.val_image_list = val_image_list
 		self.samples_per_epoch = samples_per_epoch
@@ -75,7 +75,7 @@ class AbstractGenerator(object):
 	def checkpoint(self):
 		#cmd = ['python', 'evaluate.py', '-w', self.model.checkpoint, '-f', 
 		#	'datasets/icpr/train/A01_03_image.jpg', '-o', 'datasets/icpr/train/A01_03_pred.jpg']
-		print "HI Check"#subprocess.check_output(cmd)
+		print "HI Check"
 
 	def data(self, mode='train'):
 		raise NotImplementedError()
@@ -84,135 +84,109 @@ class AbstractGenerator(object):
 
 
 class TrainValSplitGenerator(AbstractGenerator):
-	def __init__(self, window_size, directory, input_type='image', output_type='heatmap', split=0.15, **kwargs):
-		self.prefix = "/*" + input_type + ".jpg"
-		self.input_type = input_type
-		self.output_type = output_type
-		files_list = glob.glob(directory + self.prefix)
+	def __init__(self, directory, input_prefix="_image.jpg", output_prefix="_heatmap.jpg", split=0.15, **kwargs):
+		self.input_prefix = input_prefix
+		self.output_prefix = output_prefix
+
+		files_list = glob.glob(directory + "/*" + self.input_prefix)
+		#print (directory + "/*" + self.input_prefix)
+
 		train_list, val_list = train_test_split(files_list, test_size=split)
-		super(TrainValSplitGenerator, self).__init__(window_size, train_list, val_list, **kwargs)
+		super(TrainValSplitGenerator, self).__init__(train_list, val_list, **kwargs)
 
 
 
 
-class ImageHeatmapGenerator(TrainValSplitGenerator):
+class AbstractHeatmapGenerator(TrainValSplitGenerator):
 	def __init__(self, *args, **kwargs):
-		super(ImageHeatmapGenerator, self).__init__(*args, **kwargs)
+		super(AbstractHeatmapGenerator, self).__init__(*args, **kwargs)
 
 	def load(self):
 		self.img = {}
 		self.hmap = {}
 		for img_file in np.append(self.train_image_list, self.val_image_list):
-			heatmap_file = img_file[:-(len(self.prefix) - 2)] + self.output_type + ".jpg"
-			print (img_file, heatmap_file)
-
-			
-			if self.input_type == 'image':
-				self.img[img_file] = (plt.imread(img_file))/255.0
-			else:
-				self.img[img_file] = ((plt.imread(img_file).sum(axis=2) < 700).astype(int))
-
-			if self.output_type == 'image':
-				self.hmap[img_file] = (plt.imread(heatmap_file))/255.0
-			else:
-				self.hmap[img_file] = ((plt.imread(heatmap_file).sum(axis=2) < 700).astype(int))
+			heatmap_file = img_file[:-len(self.input_prefix)] + self.output_prefix
+			#print (img_file, heatmap_file)
+			self.img[img_file] = (scipy.misc.imread(img_file))/255.0
+			self.hmap[img_file] = (scipy.misc.imread(heatmap_file) > 128).astype(int)
 
 	def data(self, mode='train'):
 		file_list = self.train_image_list if mode == 'train' else self.val_image_list
 		num_samples = self.samples_per_epoch if mode == 'train' else self.val_samples
 
-		img_snap, hmap_snap = [], []
+		batch_data, batch_target, multiple_sets, multiple_targets = [], [], False, False
+
+		generator_embed = self.gen_sample_pair(file_list, mode=mode)
 		for i in range(0, num_samples):
-			image_file = random.choice(file_list)
-			
-			x = random.randint(0, self.hmap[image_file].shape[0] - self.window_size)
-			y = random.randint(0, self.hmap[image_file].shape[1] - self.window_size)
+			window, target = next(generator_embed)
+			multiple_sets = type(window) == list
+			multiple_targets = type(target) == list
+			batch_data.append(window)
+			batch_target.append(target)
 
-			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size)])
-			hmap_snap.append([self.hmap[image_file][x:(x + self.window_size), y:(y + self.window_size)]])
+		generator_embed.close()
 
-		img_snap, hmap_snap = np.array(img_snap), np.array(hmap_snap)
-		if self.input_type == 'image':
-			img_snap = np.rollaxis(np.array(img_snap), 3, 1)
+		if multiple_sets:
+			batch_data_accumulate = []
+			for i in range(0, len(batch_data[0])):
+				cur_batch = []
+				for j in range(0, len(batch_data)):
+					cur_batch.append(batch_data[j][i])
+				cur_batch = np.array(cur_batch)
+				batch_data_accumulate.append(cur_batch)
+			batch_data = batch_data_accumulate
 		else:
-			img_snap = img_snap.reshape(len(img_snap), 1, self.window_size, self.window_size)
+			batch_data = np.array(batch_data)
 
-		if self.output_type == 'image':
-			hmap_snap = np.rollaxis(np.array(hmap_snap), 3, 1)
+		if multiple_targets:
+			batch_target_accumulate = []
+			for i in range(0, len(batch_target[0])):
+				cur_batch = []
+				for j in range(0, len(batch_target)):
+					cur_batch.append(batch_target[j][i])
+				cur_batch = np.array(cur_batch)
+				batch_target_accumulate.append(cur_batch)
+			batch_target = batch_target_accumulate
 		else:
-			hmap_snap = hmap_snap.reshape(len(hmap_snap), 1, self.window_size, self.window_size)
+			batch_target = np.array(batch_target)
 
-		return img_snap, hmap_snap
+		return batch_data, batch_target
+
+	def gen_sample_pair(self, files_list):
+
+		# All generators must implement gen_sample pair -- returns a
+		# pair (window, target) that represents a data/target pair
+		raise NotImplementedError()
 
 
 
-class PreferentialHeatmapGenerator(ImageHeatmapGenerator):
+
+
+
+class BootstrapGenerator(AbstractHeatmapGenerator):
 	def __init__(self, *args, **kwargs):
-		self.fraction = kwargs.pop('fraction', 0.1)
-		super(PreferentialHeatmapGenerator, self).__init__(*args, **kwargs)
+		self.erf = kwargs.pop("erf", lambda x:x**2)
+		self.pred_prefix = kwargs.pop("pred_prefix", "_inter.jpg")
+		super(BootstrapGenerator, self).__init__(*args, **kwargs)
+
+	def load(self):
+		self.img = {}
+		self.hmap = {}
+		self.predmap = {}
+		for img_file in np.append(self.train_image_list, self.val_image_list):
+			heatmap_file = img_file[:-len(self.input_prefix)] + self.output_prefix
+			pred_file = img_file[:-len(self.input_prefix)] + self.pred_prefix
+			#print (img_file, heatmap_file)
+			self.img[img_file] = (scipy.misc.imread(img_file))/255.0
+			self.hmap[img_file] = (scipy.misc.imread(heatmap_file) > 128).astype(int)
+
+			if os.path.exists(pred_file):
+				self.predmap[img_file] = scipy.misc.imread(pred_file)/255.0
 
 	def data(self, mode='train'):
-		print ("generating data")
-		file_list = self.train_image_list if mode == 'train' else self.val_image_list
-		num_samples = self.samples_per_epoch if mode == 'train' else self.val_samples
-
-		img_snap, hmap_snap = [], []
-		while len(img_snap) < self.samples_per_epoch:
-			print len(img_snap),
-
-			image_file = random.choice(file_list)
-			
-			x = random.randint(0, self.hmap[image_file].shape[0] - self.window_size)
-			y = random.randint(0, self.hmap[image_file].shape[1] - self.window_size)
-
-			hmap_cur = self.hmap[image_file][x:(x + self.window_size), y:(y + self.window_size)]
-			frac = hmap_cur.astype(int).sum() / (hmap_cur.shape[0] * hmap_cur.shape[1] * 1.0)
-			print (frac)
-			if frac < self.fraction:
-				continue
-			
-			img_snap.append(self.img[image_file][x:(x + self.window_size), y:(y + self.window_size)])
-			hmap_snap.append(hmap_cur)
-
-		img_snap, hmap_snap = np.array(img_snap), np.array(hmap_snap)
-		print img_snap.shape
-		print hmap_snap.shape
-
-		if self.input_type == 'image':
-			img_snap = np.rollaxis(np.array(img_snap), 3, 1)
-		else:
-			img_snap = img_snap.reshape(len(img_snap), 1, self.window_size, self.window_size)
-
-		if self.output_type == 'image':
-			hmap_snap = np.rollaxis(np.array(hmap_snap), 3, 1)
-		else:
-			hmap_snap = hmap_snap.reshape(len(hmap_snap), 1, self.window_size, self.window_size)
-
-		return img_snap, hmap_snap
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+		batch_data, batch_target = super(BootstrapGenerator, self).data(mode=mode)
+		self.load()
+		return batch_data, batch_target
 
 
 
@@ -381,17 +355,6 @@ class BootstrapGenerator(SimpleImageGenerator):
 			era += 1
 
 
-
-
-
-
-
-
-
-
-
-
-
 """
 
 
@@ -404,16 +367,7 @@ class BootstrapGenerator(SimpleImageGenerator):
 
 
 if __name__ == "__main__":
-	icpr_generator = TrainValBootstrapGenerator(128, "datasets/icpr/train/", threshold=0.3, split=0.15, 
-		samples_per_epoch=20, batch_size=5, checkpoint="boot_check.png", verbose=True)
-	icpr_generator.seed()
-	print icpr_generator.queue
-
-	from models import ImgToImgModel
-	icpr_generator.model = ImgToImgModel.load("weights.hdf5")
-	icpr_generator.model.model.summary()
-	icpr_generator.scout()
-	icpr_generator.checkpoint()
+	print ("Hi")
 
 
 

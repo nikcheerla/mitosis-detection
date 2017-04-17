@@ -194,8 +194,8 @@ def ResNet50(include_top=True, weights='imagenet',
     else:
         bn_axis = 1
 
-    #x = ZeroPadding2D((3, 3))(img_input)
-    x = Conv2D(64, (7, 7), strides=(2, 2), name='conv1')(img_input)
+    x = ZeroPadding2D((3, 3))(img_input)
+    x = Conv2D(64, (7, 7), strides=(2, 2), name='conv1')(x)
     x = BatchNormalization(axis=bn_axis, name='bn_conv1')(x)
     x = Activation('relu')(x)
     x = MaxPooling2D((3, 3), strides=(2, 2))(x)
@@ -253,8 +253,8 @@ def ResNet50(include_top=True, weights='imagenet',
                                     cache_subdir='models',
                                     md5_hash='a268eb855778b3df3c7506639542a6af')
         model.load_weights(weights_path)
-        if K.backend() == 'theano':
-            layer_utils.convert_all_kernels_in_model(model)
+        #if K.backend() == 'theano':
+        #    layer_utils.convert_all_kernels_in_model(model)
 
         if K.image_data_format() == 'channels_first':
             if include_top:
@@ -272,13 +272,16 @@ def ResNet50(include_top=True, weights='imagenet',
                               '`image_data_format="channels_last"` in '
                               'your Keras config '
                               'at ~/.keras/keras.json.')
-    return model, inputs, [dn_feat2, dn_feat3, dn_feat4, x]
+
+    model.input_tensor_fcn = inputs
+    model.tensor_hooks_fcn = [dn_feat1, dn_feat2, dn_feat3, dn_feat4, x]
+    return model
 
 
 
 if __name__ == '__main__':
 
-    model, inputs, arr = ResNet50(include_top=False, weights='imagenet', input_shape=(3, 224, 224))
+    model = ResNet50(include_top=False, weights='imagenet', input_shape=(224, 224, 3))
     img_path = 'cats.jpg'
     img = image.load_img(img_path, target_size=(224, 224))
     x = image.img_to_array(img)

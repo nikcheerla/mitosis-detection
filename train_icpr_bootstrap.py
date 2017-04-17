@@ -7,8 +7,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import glob, sys, os, random, keras
 
-from generators import AbstractHeatmapGenerator
-from utils import bound
+from generators import AbstractHeatmapGenerator, BootstrapGenerator
+from utils import bound, evaluate_model_on_directory
 
 import IPython
 
@@ -22,7 +22,7 @@ from scipy.ndimage.interpolation import rotate
 window_size = 80
 
 
-class ICPRHeatmapGenerator(AbstractHeatmapGenerator):
+class ICPRBootstrapGenerator(BootstrapGenerator):
 	
 	def __init_(self, directory, **kwargs):
 		super(ICPRHeatmapGenerator, self).__init__(directory, **kwargs)
@@ -38,12 +38,17 @@ class ICPRHeatmapGenerator(AbstractHeatmapGenerator):
 				window_size_exp = int(window_size * random.choice([0.75, 0.8, 1.0, 1.2, 1.25]))
 			
 			while True:
-				x = random.randint(window_size_exp//2 + 10, hmap.shape[0] - window_size_exp//2 - 10)
-				y = random.randint(window_size_exp//2 + 10, hmap.shape[0] - window_size_exp//2 - 10)
+				x = random.randint(window_size_exp//2 + 1, hmap.shape[0] - window_size_exp//2 - 1)
+				y = random.randint(window_size_exp//2 + 1, hmap.shape[0] - window_size_exp//2 - 1)
+
+				if image_file in self.predmap:
+					d = (self.predmap[image_file][x, y])
+
 				if target == hmap[x, y]:
+					
 					break
 
-			x, y = x + random.randint(-8, 8), y + random.randint(-8, 8)
+			#x, y = x + random.randint(-8, 8), y + random.randint(-8, 8)
 
 			xs, ys = x - window_size_exp//2, y - window_size_exp//2
 			xs, ys = bound((xs, ys), low=1, high=hmap.shape[0] - window_size -1)
@@ -70,20 +75,24 @@ class ICPRHeatmapGenerator(AbstractHeatmapGenerator):
 
 
 
-icpr_generator = ICPRHeatmapGenerator("datasets/icpr/train/",
-		split=0.15, samples_per_epoch=35000, val_samples=2000, batch_size=128)
+icpr_generator = ICPRBootstrapGenerator("datasets/icpr/train/", erf=lambda x:x**2,
+		split=0.15, samples_per_epoch=20000, val_samples=2000, batch_size=64)
 
-"""
 X, Y = icpr_generator.data(mode='train')
 IPython.embed()
 np.savez_compressed("results/train_data_icpr.npy", X=X, Y=Y)
-"""
 
 local_model = VGG19(weights=None, input_shape=(window_size, window_size, 3), 
 		classes=2, filter_size=16, pooling='avg', dropout=0.3)
 local_model.summary()
-sgd = keras.optimizers.SGD(lr=1e-2, decay=1e-6, momentum=0.85, nesterov=True)
-local_model.compile(optimizer=sgd, loss='binary_crossentropy', metrics=['accuracy'])
+#sgd = keras.optimizers.SGD(lr=8e-3, decay=1e-6, momentum=0.8, nesterov=True)
+local_model.compile(optimizer='adadelta', loss='binary_crossentropy', metrics=['accuracy'])
 
 model = FCNModel(local_model)
-model.train(icpr_generator, epochs=[10, 5, 2, 1])
+
+
+
+model.train(icpr_generator, epochs=[5])
+evaluate_model_on_directory(model, "datasets/icpr/train/", suffix="_inter.jpg")
+model.train(icpr_generator, epochs=[10])
+evaluate_model_on_directory(model, "datasets/icpr/train/", suffix="_inter.jpg")

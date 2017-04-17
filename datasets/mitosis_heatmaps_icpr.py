@@ -5,11 +5,12 @@ import numpy as np
 
 import matplotlib
 import matplotlib.pyplot as plt
-import glob, sys, os, csv
+import glob, sys, os, csv, scipy
+import scipy.misc
 
 for image_file, csv_file in zip(sorted(glob.glob("icpr/train/*.bmp")), sorted(glob.glob("icpr/train/*.csv"))):
 	
-	img = plt.imread(image_file)
+	img = scipy.misc.imread(image_file)
 	hmap = np.zeros(img.shape[:-1]).astype(int)
 	
 	csv_link = csv.reader(open(csv_file, 'rb'))
@@ -20,5 +21,5 @@ for image_file, csv_file in zip(sorted(glob.glob("icpr/train/*.bmp")), sorted(gl
 
 	print (hmap)
 
-	plt.imsave(image_file[:-4] + "_image.jpg", img)
-	plt.imsave(image_file[:-4] + "_heatmap.jpg", hmap, cmap=plt.get_cmap("Oranges"))
+	scipy.misc.imsave(image_file[:-4] + "_image.jpg", img)
+	scipy.misc.imsave(image_file[:-4] + "_heatmap.jpg", hmap)

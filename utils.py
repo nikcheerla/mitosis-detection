@@ -2,16 +2,25 @@
 #Misc utils, including nuclei detection and image processing
 
 import numpy as np
+
 from scipy import ndimage as nd
+import scipy.misc
 import skimage as ski
 import skimage.io as skio
+from skimage import filters
 from skimage.exposure import rescale_intensity
 from skimage import morphology
 import scipy.ndimage.morphology as smorphology
 from scipy.ndimage import gaussian_filter
 from skimage.measure import label, regionprops
 from skimage.segmentation import clear_border
+from scipy.signal import convolve
 
+from skimage.morphology import binary_dilation, binary_erosion
+
+import matplotlib.pyplot as plt
+import glob
+import IPython
 
 def nuclei_detect_pipeline(img, MinPixel = 200, MaxPixel=2500):
     return nuclei_detection(img, MinPixel, MaxPixel)
@@ -59,6 +68,48 @@ def nuclei_detection(img, MinPixel, MaxPixel):
     BW = L > 0
     return BW
 
+def bound(tuple, low=0, high=2000):
+    xs, ys = tuple
+    return min(max(xs, low), high), min(max(ys, low), high)
+
+
+def evaluate_model_on_directory(fcn_model, directory, rotations=[0, 1, 2, 3], window_size=[500, 1000], 
+            overlap=0, suffix="_pred.jpg", visualize_thresh=True):
+
+    for img_file in sorted(glob.glob(directory + "/*_image.jpg")):
+        img = scipy.misc.imread(img_file)/255.0
+
+        preds = []
+        for k in rotations:
+            for wsize in window_size:
+                img2 = np.rot90(img, k=k)
+                preds_tmp = fcn_model.evaluate_tiled(img2, window_size=wsize, overlap=overlap)
+                preds_tmp = np.rot90(preds_tmp, k=-k)
+                preds.append(preds_tmp)
+        preds = np.mean(np.array(preds), axis=0)
+        print (preds.mean())
+
+
+        
+        pred_file = img_file[:-10] + suffix
+        scipy.misc.imsave(pred_file, preds)
+
+        if visualize_thresh:
+
+            preds_thresh = preds < filters.threshold_otsu(preds)
+            thresh_file = img_file[:-10] + "_thresh.jpg"
+            scipy.misc.imsave(thresh_file, preds_thresh)
 
 
 
+
+
+
+
+
+
+if __name__ == "__main__":
+    from models import FCNModel
+    import sys
+    model = FCNModel.load("results/checkpoint.h5")
+    evaluate_model_on_directory(model, sys.argv[1], suffix="_inter.jpg")

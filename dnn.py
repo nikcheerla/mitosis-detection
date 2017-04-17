@@ -25,6 +25,9 @@ from keras.utils.data_utils import get_file
 from keras.applications.imagenet_utils import preprocess_input
 
 from external.resnet50 import ResNet50
+from external.vgg19 import VGG19
+
+import matplotlib.pyplot as plt
 
 import IPython
 
@@ -40,108 +43,6 @@ import h5py
 
 def str_shape(x):
     return 'x'.join(map(str, x.shape))
-
-
-def load_weights(model, filepath, lookup={}, ignore=[], transform=None, verbose=True):
-    """Modified version of keras load_weights that loads as much as it can.
-    Useful for transfer learning.
-    read the weights of layers stored in file and copy them to a model layer.
-    the name of each layer is used to match the file's layers with the model's.
-    It is possible to have layers in the model that dont appear in the file..
-    The loading stopps if a problem is encountered and the weights of the
-    file layer that first caused the problem are returned.
-    # Arguments
-        model: Model
-            target
-        filepath: str
-            source hdf5 file
-        lookup: dict (optional)
-            by default, the weights of each layer in the file are copied to the
-            layer with the same name in the model. Using lookup you can replace
-            the file name with a different model layer name, or to a list of
-            model layer names, in which case the same weights will be copied
-            to all layer models.
-        ignore: list (optional)
-            list of model layer names to ignore in
-        transform: None (optional)
-            This is an optional function that receives the list of weighs
-            read from a layer in the file and the model layer object to which
-            these weights should be loaded.
-        verbose: bool
-            high recommended to keep this true and to follow the print messages.
-    # Returns
-        weights of the file layer which first caused the load to abort or None
-        on successful load.
-    """
-    if verbose:
-        print ('Loading', filepath, 'to', model.name)
-    flattened_layers = model.layers
-    with h5py.File(filepath, mode='r') as f:
-        # new file format
-        layer_names = [n.decode('utf8') for n in f.attrs['layer_names']]
-
-        # we batch weight value assignments in a single backend call
-        # which provides a speedup in TensorFlow.
-        weight_value_tuples = []
-        for name in layer_names:
-            if verbose:
-                print name,
-            g = f[name]
-            weight_names = [n.decode('utf8') for n in
-                            g.attrs['weight_names']]
-            if len(weight_names):
-                weight_values = [g[weight_name] for weight_name in
-                                 weight_names]
-                if verbose:
-                    print 'loading', ' '.join(
-                            str_shape(w) for w in weight_values),
-                target_names = lookup.get(name, name)
-                if isinstance(target_names, basestring):
-                    target_names = [target_names]
-                # handle the case were lookup asks to send the same weight to multiple layers
-                target_names = [target_name for target_name in target_names if
-                                target_name == name or target_name not in layer_names]
-                for target_name in target_names:
-                    if verbose:
-                        print target_name,
-                    try:
-                        layer = model.get_layer(name=target_name)
-                    except:
-                        layer = None
-                    if layer:
-                        # the same weight_values are copied to each of the target layers
-                        symbolic_weights = layer.trainable_weights + layer.non_trainable_weights
-
-                        if transform is not None:
-                            transformed_weight_values = transform(weight_values, layer)
-                            if transformed_weight_values is not None:
-                                if verbose:
-                                    print '(%d->%d)'%(len(weight_values),len(transformed_weight_values)),
-                                weight_values = transformed_weight_values
-
-                        problem = len(symbolic_weights) != len(weight_values)
-                        if problem and verbose:
-                            print '(bad #wgts)',
-                        if not problem:
-                            weight_value_tuples += zip(symbolic_weights, weight_values)
-                    else:
-                        problem = True
-                    if problem:
-                        if verbose:
-                            if name in ignore or ignore == '*':
-                                print '(skipping)',
-                            else:
-                                print 'ABORT'
-                        if not (name in ignore or ignore == '*'):
-                            K.batch_set_value(weight_value_tuples)
-                            return [np.array(w) for w in weight_values]
-                if verbose:
-                    print
-            else:
-                if verbose:
-                    print 'skipping this is empty file layer'
-        K.batch_set_value(weight_value_tuples)
-
 
 
 
@@ -181,24 +82,58 @@ def constrain(l1, inputs):
     return w1
 
 
-def fully_convolutional(model, inputs, arr):
+def fully_convolutional(model):
+    inputs = model.input_tensor_fcn
+    arr = model.tensor_hooks_fcn
+
     desired_output_shape = model.input_shape
 
     for i in range(0, len(arr)):
         cur_shape = Model(inputs, arr[i]).output_shape
-        scale_factor = desired_output_shape[-1]/cur_shape[-1]
+        scale_factor = desired_output_shape[-2]/cur_shape[-2]
         arr[i] = UpSampling2D((scale_factor, scale_factor)) (arr[i])
         #arr[i] = constrain(arr[i], inputs)
 
-    x = merge(arr, mode='concat', concat_axis=1)
+    x = merge(arr, mode='concat', concat_axis=3)
     return Model(inputs, x)
 
+def resize(model, input_shape=(None, None, 3)):
+    json = model.get_config()
+    json['layers'][0]['config']['batch_input_shape'] = (None, ) + input_shape
+    model2 = Model.from_config(json)
+    model2.set_weights(model.get_weights())
+    return model2
 
+    
 
+def dilation_map(model):
+    json = model.get_config()
+    
+    dilation = {}
+    for layer in json['layers']:
+        name = layer['name']
+        print (name)
+        if layer['class_name'] == 'InputLayer':
+            dilation[name] = 1
+            continue
 
+        prev = layer['inbound_nodes'][0][0][0]
+        print (prev)
+        dilation[name] = dilation[prev]
 
+        if layer['class_name'] in ['Convolution2D']:
+            layer['config']['dilation_rate'] = (dilation[prev], dilation[prev])
 
+        if layer['class_name'] in ['MaxPooling2D', 'Conv2D', 'Convolution2D', 'AveragePooling2D']:
+            mul = layer['config']['strides'][0]
+            dilation[name] = mul*dilation[prev]
+            layer['config']['strides'] = (1, 1)
+            layer['config']['padding'] = 'same'
 
+    model2 = Model.from_config(json)
+    model2.set_weights(model.get_weights())
+
+    return model2
 
 
 
@@ -206,18 +141,24 @@ def fully_convolutional(model, inputs, arr):
 
 
 if __name__ == '__main__':
-    model, inputs, arr = ResNet50(include_top=False, weights='imagenet', input_shape=(3, 224, 224))
-    model2 = fully_convolutional(model, inputs, arr)
+    model = VGG19(weights=None, input_shape=(64*7, 64*7, 3), classes=2, num_filters=16, pooling='avg')
+    model2 = dilation_map(model)
+
+    IPython.embed()
+
+    model2 = fully_convolutional(model)
     model2.summary()
 
     
-    img_path = 'external/cats.jpg'
-    img = image.load_img(img_path, target_size=(224, 224))
+    img_path = 'external/Africa.jpg'
+    img = image.load_img(img_path, target_size=(64*7, 64*7))
     x = image.img_to_array(img)
     x = np.expand_dims(x, axis=0)
     x = preprocess_input(x)
     print('Input image shape:', x.shape)
 
     preds = model2.predict(x)
+
     IPython.embed()
+    
     
