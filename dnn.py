@@ -17,7 +17,7 @@ from keras.layers import Dense, Activation, Flatten
 from keras.layers import Convolution2D, MaxPooling2D, ZeroPadding2D, AveragePooling2D, UpSampling2D, Cropping2D
 
 from keras.layers import BatchNormalization
-from keras.models import Model
+from keras.models import Model, load_model
 from keras.preprocessing import image
 import keras.backend as K
 from keras.utils.layer_utils import convert_all_kernels_in_model
@@ -29,7 +29,7 @@ from external.vgg19 import VGG19
 
 import matplotlib.pyplot as plt
 
-import IPython
+import IPython, tempfile, shutil, os
 
 
 
@@ -53,8 +53,12 @@ def str_shape(x):
 
 
 
-
-
+def clear_session_except_model(model):
+    model.save("cache.h5")
+    K.clear_session()
+    model = load_model("cache.h5")
+    os.remove("cache.h5")
+    return model
 
 
 
@@ -107,6 +111,7 @@ def resize(model, input_shape=(None, None, 3)):
     
 
 def dilation_map(model):
+
     json = model.get_config()
     
     dilation = {}

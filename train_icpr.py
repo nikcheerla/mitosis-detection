@@ -71,19 +71,13 @@ class ICPRHeatmapGenerator(AbstractHeatmapGenerator):
 
 
 icpr_generator = ICPRHeatmapGenerator("datasets/icpr/train/",
-		split=0.15, samples_per_epoch=35000, val_samples=2000, batch_size=128)
-
-"""
-X, Y = icpr_generator.data(mode='train')
-IPython.embed()
-np.savez_compressed("results/train_data_icpr.npy", X=X, Y=Y)
-"""
+		split=0.15, samples_per_epoch=20000, val_samples=2000, batch_size=128)
 
 local_model = VGG19(weights=None, input_shape=(window_size, window_size, 3), 
 		classes=2, filter_size=16, pooling='avg', dropout=0.3)
 local_model.summary()
 sgd = keras.optimizers.SGD(lr=1e-2, decay=1e-6, momentum=0.85, nesterov=True)
-local_model.compile(optimizer=sgd, loss='binary_crossentropy', metrics=['accuracy'])
+local_model.compile(optimizer='adadelta', loss='binary_crossentropy', metrics=['accuracy'])
 
 model = FCNModel(local_model)
 model.train(icpr_generator, epochs=[10, 5, 2, 1])

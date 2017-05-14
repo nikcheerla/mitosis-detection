@@ -11,7 +11,8 @@ from keras.callbacks import ProgbarLogger, RemoteMonitor, ReduceLROnPlateau, Mod
 from keras import backend as K
 from keras import objectives
 
-from dnn import fully_convolutional, dilation_map, resize
+from dnn import fully_convolutional, dilation_map, resize, clear_session_except_model
+from utils import Suppressor
 
 import IPython
 
@@ -24,21 +25,26 @@ class FCNModel(object):
 	def __init__(self, local_model, checkpoint="results/checkpoint.h5"):
 		self.local_model = local_model
 		self.checkpoint = checkpoint
+		self.model_cache = {}
 
 	def train(self, image_generator, epochs=[20]):
+		self.model_cache = {}
 		remote = RemoteMonitor(root='https://localhost:9000')
 		reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, verbose=1,
                   patience=3, min_lr=0.001)
 		checkpointer = ModelCheckpoint(filepath=self.checkpoint, verbose=1, save_best_only=False)
-
-		image_generator.model = self
 		
 		for i, nb_epoch in enumerate(epochs):
 			print ("ERA {}: ".format(i))
 
 			X_train, y_train = image_generator.data(mode='train')
 			X_val, y_val = image_generator.data(mode='val')
+
 			print (X_train.shape, y_train.shape)
+
+			#np.savez("results/train_data_era" + str(i) + ".npz", X_train=X_train, y_train=y_train, X_val=X_val, y_val=y_val)
+			#IPython.embed();
+
 			try:
 				self.local_model.fit(X_train, y_train,
 		                epochs=nb_epoch, batch_size=image_generator.batch_size,
@@ -46,16 +52,27 @@ class FCNModel(object):
 		                callbacks=[reduce_lr, checkpointer]
 		            )
 				preds = self.local_model.predict(X_val)
-				print ("MEAANNNN")
-				print (preds.mean(axis=0))
 			except KeyboardInterrupt:
 				pass
+			del X_train, y_train, X_val, y_val
+			image_generator.checkpoint(self)
+
 
 	def evaluate(self, X, method=dilation_map, batch_size=1):
-		model = method(self.local_model)
-		model = resize(model, (X.shape[1], X.shape[2], 3))
 
-		return model.predict(X, batch_size=batch_size, verbose=1)
+		desired_shape = (X.shape[1], X.shape[2], self.local_model.input_shape[3])
+
+		if desired_shape in self.model_cache:
+			model = self.model_cache[desired_shape]
+		else:
+			with Suppressor():
+				model = method(self.local_model)
+				model = resize(model, desired_shape)
+				self.model_cache[desired_shape] = model
+
+		pred = model.predict(X, batch_size=batch_size, verbose=1)
+
+		return pred
 
 	def evaluate_tiled(self, image, method=dilation_map, window_size=None, overlap=0, batch_size=1):
 
